@@ -40,6 +40,9 @@ class Detector(object):
         self.pause = pause
         self.show = show
         self.visualization = show
+        # External annotation hook (callable) to enrich predictBoxes before visualize
+        self.side_state_callback = None
+        self.hide_attr = False  # 由 demo 通过参数开关控制是否显示属性文本
 
     @return_time
     def run(self, imgInput, img_info=None, radar_pc=None):
@@ -72,6 +75,13 @@ class Detector(object):
         # Merge outputs
         batchSize = detects["scores"].shape[0]
         predictBoxes, merge_time = self.merge_outputs(detects, batchSize)
+
+        # Invoke external hook to enrich predictBoxes (add custom fields like side_state)
+        if callable(self.side_state_callback):
+            try:
+                self.side_state_callback(predictBoxes, metas, img_info)
+            except Exception as e:
+                print(f"[Detector] side_state_callback error: {e}")
 
         # Show results
         (results3D, results2D, resultsBev), show_results_time = self.visualize(
@@ -238,6 +248,7 @@ class Detector(object):
         metas = []
         calibs = []
         for i, img_info in enumerate(img_infos):
+            pc_3d = None  # default when no radar provided for this view
             if img_info is not None and "calib" in img_info:
                 calib = np.array(img_info["calib"], dtype=np.float32)
 
@@ -295,6 +306,17 @@ class Detector(object):
                     pc_deps = pc_dep
                 else:
                     pc_deps = torch.cat((pc_deps, pc_dep), dim=0)
+            elif self.config.DATASET.RADAR_PC and radar_pcs is None:
+                # create zero placeholder pc_dep for fusion pipeline
+                out_h, out_w = self.config.MODEL.OUTPUT_SIZE
+                n_chan = 1 if self.config.DATASET.ONE_HOT_PC else 1  # at least depth slice
+                # Use 3 channels to be compatible with dataset-generated maps (depth, vx, vz)
+                n_chan = 3 if not self.config.DATASET.ONE_HOT_PC else int(self.config.DATASET.MAX_PC_DIST) * 3
+                z = torch.zeros((1, n_chan, out_h, out_w), dtype=torch.float32, device=self.device)
+                if pc_deps is None:
+                    pc_deps = z
+                else:
+                    pc_deps = torch.cat((pc_deps, z), dim=0)
 
             meta = {
                 "calib": calib,
@@ -309,7 +331,7 @@ class Detector(object):
                 "transMatInput": transMatInput,
                 "transMatOutput": transMatOutput,
             }
-            if self.config.DATASET.RADAR_PC:
+            if self.config.DATASET.RADAR_PC and pc_3d is not None:
                 meta["pc_3d"] = pc_3d  # For visualization
             metas.append(meta)
 
@@ -521,6 +543,120 @@ class Detector(object):
                     (255, np.random.randint(255), 0),
                     1,
                 )
+                # Overlay speed (m/s) if velocity is available
+                try:
+                    if "velocity" in predictBox and predictBox["velocity"] is not None:
+                        v = predictBox["velocity"]
+                        # Support tensor or list/ndarray
+                        if hasattr(v, "detach"):
+                            v = v.detach().cpu().numpy()
+                        v = np.array(v).reshape(-1)
+                        # Use horizontal-plane (x-z) speed magnitude if available
+                        if v.size >= 3:
+                            speed = float(np.linalg.norm([v[0], v[2]]))
+                        elif v.size >= 2:
+                            speed = float(np.linalg.norm(v[:2]))
+                        elif v.size >= 1:
+                            speed = float(abs(v[0]))
+                        else:
+                            speed = 0.0
+                        # Place text slightly above the top-left corner
+                        tl = tuple(bbox[0])
+                        org = (int(tl[0]), max(0, int(tl[1]) - 6))
+                        cv2.putText(
+                            result2D,
+                            f"{speed:.1f} m/s",
+                            org,
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (0, 255, 255),
+                            1,
+                            cv2.LINE_AA,
+                        )
+                except Exception:
+                    # Robust to any unexpected shape or missing fields
+                    pass
+
+                # Overlay nuScenes attribute unless隐藏开关开启
+                try:
+                    if (not getattr(self, 'hide_attr', False)) and "nuscenes_att" in predictBox and predictBox["nuscenes_att"] is not None:
+                        att = predictBox["nuscenes_att"]
+                        if hasattr(att, "detach"):
+                            att = att.detach().cpu().numpy()
+                        att = np.array(att).reshape(-1)
+
+                        # Determine class name
+                        cls_id = int(predictBox.get("class", 0)) - 1
+                        cls_name = None
+                        if hasattr(self.dataset, "class_name") and 0 <= cls_id < len(self.dataset.class_name):
+                            cls_name = self.dataset.class_name[cls_id]
+
+                        # Map attribute scores to id according to class groups
+                        att_id = 0
+                        if cls_name in ["motorcycle", "bicycle"] and att.size >= 2:
+                            att_id = 1 + int(np.argmax(att[0:2]))  # 1~2
+                        elif cls_name == "pedestrian" and att.size >= 5:
+                            att_id = 3 + int(np.argmax(att[2:5]))  # 3~5
+                        elif cls_name in [
+                            "car",
+                            "truck",
+                            "bus",
+                            "trailer",
+                            "construction_vehicle",
+                        ] and att.size >= 8:
+                            att_id = 6 + int(np.argmax(att[5:8]))  # 6~8
+                        else:
+                            att_id = 0
+
+                        # id -> attribute name
+                        id_to_attribute = {
+                            0: "",
+                            1: "cycle.with_rider",
+                            2: "cycle.without_rider",
+                            3: "pedestrian.moving",
+                            4: "pedestrian.standing",
+                            5: "pedestrian.sitting_lying_down",
+                            6: "vehicle.moving",
+                            7: "vehicle.parked",
+                            8: "vehicle.stopped",
+                        }
+                        att_name = id_to_attribute.get(att_id, "")
+
+                        # Prefer short label for vehicles
+                        short_label = att_name.split(".")[-1] if att_name else ""
+                        if short_label:
+                            # Place below speed text
+                            tl = tuple(bbox[0])
+                            org2 = (int(tl[0]), min(result2D.shape[0] - 1, int(tl[1]) + 14))
+                            cv2.putText(
+                                result2D,
+                                short_label,
+                                org2,
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
+                                (50, 220, 50),
+                                1,
+                                cv2.LINE_AA,
+                            )
+                except Exception:
+                    pass
+                # Overlay side behavior state if provided by callback
+                try:
+                    if "side_state" in predictBox and predictBox["side_state"]:
+                        tl = tuple(bbox[0])
+                        org3 = (int(tl[0]), min(result2D.shape[0] - 1, int(tl[1]) + 28))
+                        cv2.putText(
+                            result2D,
+                            str(predictBox["side_state"]),
+                            org3,
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (0, 165, 255),
+                            1,
+                            cv2.LINE_AA,
+                        )
+                except Exception:
+                    pass
             results2D.append(result2D)
 
             # Draw ground truth

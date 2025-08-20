@@ -700,6 +700,349 @@ class Demo(GenericDemo):
         self.single = args.single
 
     def run(self):
+        # Optional side tracker + rule-based classifier
+        use_side_cls = getattr(self.args, 'state_classify', False)
+        dump_states = getattr(self.args, 'dump_states', False)
+        output_dir = getattr(self.args, 'output_dir', '.')
+        if use_side_cls:
+            from lib.utils.simple_tracker import SimpleTracker
+            self._side_trackers = None  # lazy init list of per-camera trackers
+            side_model_path = getattr(self.args, 'side_model', '')
+            if side_model_path:
+                import numpy as _np
+                data = _np.load(side_model_path, allow_pickle=True)
+                def _obj(x):
+                    # Accept 0-d object array, 1-d length-1 array, or direct python object
+                    if isinstance(x, _np.ndarray) and x.dtype == object:
+                        if x.shape == ():  # 0-d
+                            return x.item()
+                        if x.size == 1:
+                            return x.reshape(()).item()
+                        # fallback: first element
+                        return x.flat[0]
+                    return x
+                self._side_clf = _obj(data['model'])
+                self._side_state_to_id = _obj(data['STATE_TO_ID'])
+                self._side_id_to_state = {v: k for k, v in self._side_state_to_id.items()}
+                self._side_feature_dim = int(_obj(data.get('feature_dim', 0)) or 0)
+                def _extract_features(track):
+                    import numpy as np
+                    # 与训练阶段同步：用位置差分推导速度
+                    hist = track.history[-10:]
+                    xs, zs, ts, yaws = [], [], [], []
+                    for t, loc, yaw, vel, score in hist:
+                        xs.append(float(loc[0])); zs.append(float(loc[2])); ts.append(float(t)); yaws.append(float(yaw))
+                    vfs, vls, speeds = [], [], []
+                    for i in range(1, len(xs)):
+                        dt = 0.5
+                        dz = zs[i]-zs[i-1]; dx = xs[i]-xs[i-1]
+                        vf = dz/dt; vl = dx/dt; vfs.append(vf); vls.append(vl); speeds.append((vf*vf+vl*vl)**0.5)
+                    if len(vfs)==0:
+                        vfs=[0.0]; vls=[0.0]; speeds=[0.0]
+                    yaw_rate=0.0
+                    if len(yaws)>=2:
+                        y_arr=np.unwrap(np.array(yaws)); dy=np.diff(y_arr)
+                        yaw_rate=float(np.mean(dy)/0.5)
+                    if self._side_feat_minimal:
+                        # minimal 特征顺序: vf_mean, vf_std, vl_mean, vl_std, speed_mean, speed_std, yaw_rate, ratio_lat_forward, dir_changes, mean_abs_vl
+                        vf_arr=np.array(vfs); vl_arr=np.array(vls); sp_arr=np.array(speeds)
+                        def ms(a):
+                            return float(a.mean()), float(a.std())
+                        vf_m, vf_s = ms(vf_arr)
+                        vl_m, vl_s = ms(vl_arr)
+                        sp_m, sp_s = ms(sp_arr)
+                        mean_abs_vl=float(np.mean(np.abs(vl_arr)))
+                        mean_abs_vf=float(np.mean(np.abs(vf_arr)))
+                        ratio_lat=float(mean_abs_vl/(mean_abs_vf+1e-6))
+                        dir_changes=0
+                        for i in range(1,len(vls)):
+                            if vls[i-1]*vls[i] < 0 and abs(vls[i]-vls[i-1])>0.1:
+                                dir_changes+=1
+                        feat=[vf_m,vf_s,vl_m,vl_s,sp_m,sp_s,yaw_rate,ratio_lat,float(dir_changes),mean_abs_vl]
+                    else:
+                        def agg(x):
+                            if len(x)==0: return [0,0,0,0]
+                            a=np.array(x); return [float(np.mean(a)), float(np.std(a)), float(np.max(a)), float(np.min(a))]
+                        feat=[]; feat+=agg(vfs); feat+=agg(vls); feat+=agg(speeds); feat+=[yaw_rate]
+                        # 加速度特征
+                        acc_f=[]; acc_l=[]
+                        for i in range(1,len(vfs)):
+                            acc_f.append( (vfs[i]-vfs[i-1])/0.5 )
+                            acc_l.append( (vls[i]-vls[i-1])/0.5 )
+                        def agg2(x):
+                            if len(x)==0: return [0,0,0,0]
+                            a=np.array(x); return [float(np.mean(a)), float(np.std(a)), float(np.max(a)), float(np.min(a))]
+                        feat+=agg2(acc_f); feat+=agg2(acc_l)
+                        dir_changes=0
+                        for i in range(1,len(vls)):
+                            if vls[i-1]*vls[i]<0 and abs(vls[i]-vls[i-1])>0.1:
+                                dir_changes+=1
+                        mean_abs_vf=float(np.mean(np.abs(vfs)))
+                        mean_abs_vl=float(np.mean(np.abs(vls)))
+                        ratio_lat_forward=float(mean_abs_vl/(mean_abs_vf+1e-6))
+                        feat.extend([float(dir_changes), mean_abs_vf, mean_abs_vl, ratio_lat_forward])
+                        max_vl=float(max(np.abs(vls))) if vls else 0.0
+                        max_yaw_rate=abs(yaw_rate)
+                        feat.extend([max_vl, max_yaw_rate])
+                        # Radar聚合 (minimal 模式已忽略)
+                        try:
+                            rstats=getattr(track,'radar_stats',[]); rsel=rstats[-10:]
+                            def gather(key):
+                                return [rs.get(key) for rs in rsel if rs and rs.get('count',0)>0 and key in rs]
+                            radar_keys=['count','vx_mean','vz_mean','vr_mean','vr_std','rcs_mean','rcs_std']
+                            def agg1(x):
+                                if len(x)==0: return [0.0,0.0,0.0,0.0]
+                                a=np.array(x,dtype=np.float32); return [float(np.mean(a)),float(np.std(a)),float(np.max(a)),float(np.min(a))]
+                            for k in radar_keys:
+                                feat.extend(agg1(gather(k)))
+                        except Exception:
+                            pass
+                    arr = np.array(feat,dtype=np.float32)
+                    if getattr(self,'_side_feature_dim',0) and arr.size!=self._side_feature_dim:
+                        if arr.size<self._side_feature_dim:
+                            arr=np.pad(arr,(0,self._side_feature_dim-arr.size),constant_values=0.0)
+                        else:
+                            arr=arr[:self._side_feature_dim]
+                    return arr.reshape(1,-1)
+                # 读取标准化统计
+                self._side_feat_mean = data.get('feature_mean') if 'feature_mean' in data else None
+                self._side_feat_std = data.get('feature_std') if 'feature_std' in data else None
+                self._side_feat_standardized = bool(data.get('standardized')) if 'standardized' in data else False
+                self._side_feat_minimal = bool(data.get('minimal')) if 'minimal' in data else False
+                self._side_feat = _extract_features
+                self._side_rule = None
+            else:
+                from lib.utils.state_classifier import RuleBasedStateClassifier
+                self._side_rule = RuleBasedStateClassifier()
+                self._side_feat = None
+            self._side_states_export = { 'frames': [] }
+            # Attach one-pass callback to detector for all cameras
+            gate = getattr(self.args, 'side_gate', 2.5)
+            def _side_cb(predictBoxesBatch, metas, img_infos):
+                import numpy as _np, time as _time
+                now = _time.time()
+                vehicle_ids = {1,2,3,4,5}  # car, truck, bus, trailer, construction_vehicle
+                dump_feat_path = getattr(self.args, 'side_dump_feat', '')
+                if dump_feat_path and not hasattr(self, '_side_feat_file'):
+                    # 延迟打开，写表头
+                    import os as _os, csv as _csv
+                    _os.makedirs(_os.path.dirname(dump_feat_path) or '.', exist_ok=True)
+                    self._side_feat_file = open(dump_feat_path, 'w', newline='')
+                    self._side_feat_csv = _csv.writer(self._side_feat_file)
+                    # 构建表头 (feat_dim 可能还未知，先写通用前缀，后续第一帧补充)
+                    self._side_feat_header_written = False
+                # 之前版本：为避免相机坐标差异导致特征分布漂移，仅在前视相机运行分类。
+                # 现在按需求改为：所有相机都运行侧向状态分类。假定 track.location 为全局或统一坐标，可跨相机比较。
+                # 若将来发现多相机分布再次漂移，可再加开关恢复单相机模式。
+                if self._side_trackers is None:
+                    self._side_trackers = [SimpleTracker() for _ in range(len(predictBoxesBatch))]
+                    self._side_dbg_counter = 0
+                for cam_index, boxes in enumerate(predictBoxesBatch):
+                    # 所有相机均执行分类
+                    is_single = (len(predictBoxesBatch) == 1)
+                    is_front = (cam_index == 1)
+                    dets = []
+                    # If radar features desired we attempt to aggregate per box using already passed radar pcs (if any in metas) - fallback skip
+                    radar_points = None
+                    try:
+                        # metas may contain radar pc list aligned with cameras under key 'radarPcs'
+                        radar_pcs_full = metas.get('radarPcs') if isinstance(metas, dict) else None
+                        if radar_pcs_full is not None and cam_index < len(radar_pcs_full):
+                            radar_points = radar_pcs_full[cam_index]
+                    except Exception:
+                        radar_points = None
+                    for p in boxes:
+                        cls_id = int(p['class'])
+                        if cls_id not in vehicle_ids:
+                            continue  # skip non-vehicle objects entirely
+                        loc_np = p['location'].detach().cpu().numpy() if hasattr(p['location'], 'detach') else _np.array(p['location'])
+                        radar_feat = None
+                        if radar_points is not None and isinstance(radar_points, _np.ndarray) and radar_points.shape[1] > 0:
+                            # radar_points expected shape (18, N)
+                            pts = radar_points
+                            dists = _np.linalg.norm(_np.stack([pts[0]-loc_np[0], pts[2]-loc_np[2]], axis=1), axis=1)
+                            m = dists < 2.0
+                            sel = pts[:, m]
+                            if sel.shape[1] > 0:
+                                vx = sel[8]; vz = sel[9]
+                                vr = _np.sqrt(vx**2 + vz**2)
+                                rcs = sel[5]
+                                radar_feat = {
+                                    'count': int(sel.shape[1]),
+                                    'vx_mean': float(_np.mean(vx)),
+                                    'vz_mean': float(_np.mean(vz)),
+                                    'vr_mean': float(_np.mean(vr)),
+                                    'vr_std': float(_np.std(vr)),
+                                    'rcs_mean': float(_np.mean(rcs)),
+                                    'rcs_std': float(_np.std(rcs)),
+                                }
+                        dets.append({
+                            'class': cls_id,
+                            'score': float(p['score']),
+                            'location': loc_np,
+                            'yaw': float(p['yaw'] if not hasattr(p['yaw'], 'detach') else p['yaw'].detach().cpu().numpy()),
+                            'velocity': p.get('velocity', _np.zeros(3)),
+                            'radar_feat': radar_feat,
+                        })
+                    tracker = self._side_trackers[cam_index]
+                    mapping = tracker.update(dets, now)
+                    # classify
+                    states = {}
+                    debug = getattr(self.args, 'side_debug', False)
+                    feat_dim = None
+                    for tid, tr in tracker.get_active_tracks().items():
+                        if self._side_feat is not None:
+                            feat = self._side_feat(tr)
+                            if feat_dim is None:
+                                feat_dim = feat.shape[1]
+                                if dump_feat_path and not self._side_feat_header_written:
+                                    header = [f'f{j:02d}' for j in range(feat_dim)] + ['pred','state','prob_max','entropy']
+                                    self._side_feat_csv.writerow(header)
+                                    self._side_feat_header_written = True
+                            # 标准化
+                            if self._side_feat_standardized and self._side_feat_mean is not None and self._side_feat_std is not None:
+                                try:
+                                    feat = (feat - self._side_feat_mean.reshape(1,-1)) / (self._side_feat_std.reshape(1,-1)+1e-6)
+                                except Exception:
+                                    pass
+                            sid = int(self._side_clf.predict(feat)[0])
+                            prob = None; pmax=1.0; pentropy=0.0
+                            if hasattr(self._side_clf, 'predict_proba'):
+                                prob = self._side_clf.predict_proba(feat)[0]
+                                try:
+                                    pmax=float(_np.max(prob)); pentropy=float(-_np.sum(prob*_np.log(prob+1e-8)))
+                                except Exception:
+                                    pass
+                                # 低置信度尝试规则修正
+                                if (pmax < 0.5 or pentropy > 1.2):
+                                    if self._side_feat_minimal and feat.shape[1] >= 10:
+                                        ratio_lat_forward = float(feat[0,7])
+                                        dir_changes = float(feat[0,8])
+                                        yaw_rate = float(feat[0,6])
+                                        vf_mean = float(feat[0,0])
+                                        vl_mean = float(feat[0,2])
+                                        speed_mean = float(feat[0,4])
+                                    elif feat.shape[1] >= 25:  # 扩展特征布局
+                                        dir_changes = float(feat[0,21])
+                                        mean_abs_vf = float(feat[0,22])
+                                        mean_abs_vl = float(feat[0,23])
+                                        ratio_lat_forward = float(feat[0,24])
+                                        yaw_rate = float(feat[0,12])
+                                        vf_mean = float(feat[0,0])
+                                        vl_mean = float(feat[0,4])
+                                        speed_mean = float(feat[0,8])
+                                    else:
+                                        ratio_lat_forward=0; dir_changes=0; yaw_rate=0; vf_mean=0; vl_mean=0; speed_mean=0
+                                    # 规则
+                                    if ratio_lat_forward>0.6 and dir_changes>0:
+                                        sid = self._side_state_to_id.get('lane_change', sid)
+                                    elif abs(yaw_rate)>0.15 and speed_mean<3.0:
+                                        sid = self._side_state_to_id.get('turning', sid)
+                                    elif speed_mean<0.3 and abs(vf_mean)<0.3:
+                                        sid = self._side_state_to_id.get('parking', sid)
+                            states[tid] = self._side_id_to_state.get(sid, '')
+                            # 可选写CSV
+                            if dump_feat_path and prob is not None:
+                                row = list(map(lambda x: f"{x:.4f}", feat[0].tolist())) + [sid, states[tid], f"{pmax:.4f}", f"{pentropy:.4f}"]
+                                try:
+                                    self._side_feat_csv.writerow(row)
+                                    if hasattr(self, '_side_feat_file'):
+                                        self._side_feat_file.flush()
+                                except Exception:
+                                    pass
+                    if debug:
+                        # Print distribution
+                        from collections import Counter
+                        c = Counter(states.values())
+                        cam_name = f'cam{cam_index}'
+                        print(f"[side-debug] cam={cam_index}({cam_name}) tracks={len(states)} dist={dict(c)} feat_dim={feat_dim}")
+                        # 额外每隔若干帧打印若干 track 的特征与概率，帮助诊断分类塌陷
+                        self._side_dbg_counter += 1
+                        if self._side_dbg_counter % 10 == 1 and self._side_feat is not None and hasattr(self._side_clf, 'predict_proba'):
+                            # 选前 5 个 track
+                            sample_items = list(tracker.get_active_tracks().items())[:5]
+                            dbg_lines = []
+                            for tid, tr in sample_items:
+                                feat_arr = self._side_feat(tr)
+                                if self._side_feat_standardized and self._side_feat_mean is not None and self._side_feat_std is not None:
+                                    try:
+                                        feat_arr = (feat_arr - self._side_feat_mean.reshape(1,-1)) / self._side_feat_std.reshape(1,-1)
+                                    except Exception:
+                                        pass
+                                prob = self._side_clf.predict_proba(feat_arr)[0]
+                                # 反算出我们构造的聚合（与训练一致：vfs agg(4) + vls(4) + speeds(4) + yaw_rate(1) ...）
+                                # 简单取出前 13 个元素含义
+                                if feat_arr.shape[1] >= 13:
+                                    vf_mean, vf_std, vf_max, vf_min, vl_mean, vl_std, vl_max, vl_min, sp_mean, sp_std, sp_max, sp_min, yaw_rate = feat_arr[0][:13]
+                                else:
+                                    vf_mean=vl_mean=sp_mean=yaw_rate=0; vf_std=vl_std=sp_std=0; vf_max=vl_max=sp_max=0; vf_min=vl_min=sp_min=0
+                                prob_map = {self._side_id_to_state[k]: float(v) for k, v in enumerate(prob)}
+                                dbg_lines.append(f"tid={tid} vf_mean={vf_mean:.2f} vl_mean={vl_mean:.2f} yaw_rate={yaw_rate:.3f} probs={prob_map}")
+                            for l in dbg_lines:
+                                print('[side-debug]   ' + l)
+                        # 周期性输出概率分布直方（前若干 track 聚合）：
+                        if self._side_dbg_counter % 30 == 1 and hasattr(self._side_clf, 'predict_proba'):
+                            try:
+                                sample_items = list(tracker.get_active_tracks().items())[:20]
+                                probs = []
+                                for tid, tr in sample_items:
+                                    ftmp = self._side_feat(tr)
+                                    if self._side_feat_standardized and self._side_feat_mean is not None and self._side_feat_std is not None:
+                                        ftmp = (ftmp - self._side_feat_mean.reshape(1,-1)) / (self._side_feat_std.reshape(1,-1)+1e-6)
+                                    p = self._side_clf.predict_proba(ftmp)[0]
+                                    probs.append(p)
+                                if probs:
+                                    probs = _np.stack(probs,0)
+                                    avg = probs.mean(0)
+                                    mp = {self._side_id_to_state[i]: float(v) for i,v in enumerate(avg)}
+                                    print(f"[side-debug] avg_proba (sampled_tracks) {mp}")
+                            except Exception:
+                                pass
+                        if debug and hasattr(self,'_side_radar_usage') and self._side_radar_usage['frames'] % 50 == 1:
+                            ru=self._side_radar_usage
+                            ratio=ru['radar_nonzero']/(ru['tracks']+1e-6)
+                            if ratio < 0.05:
+                                print(f"[side-debug] WARNING: Radar feature usage very low ({ratio*100:.1f}%), 可能推理无雷达点导致与训练分布偏移。建议重新训练时去掉 --use-radar 或在 demo 启用 RADAR_PC 配置。")
+                    # assign to boxes by nearest center
+                    for tid, det in mapping.items():
+                        loc = det['location']
+                        best_j=-1; best_d=1e9
+                        for j, p in enumerate(boxes):  # search only vehicle boxes
+                            if int(p['class']) not in vehicle_ids:
+                                continue
+                            ploc = p['location'] if not hasattr(p['location'], 'detach') else p['location'].detach().cpu().numpy()
+                            d = float(_np.linalg.norm([ploc[0]-loc[0], ploc[2]-loc[2]]))
+                            if d < best_d:
+                                best_d = d; best_j = j
+                        if best_j>=0 and best_d <= gate and int(boxes[best_j]['class']) in vehicle_ids:
+                            # 先写入侧端分类结果
+                            boxes[best_j]['side_state'] = states.get(tid, '')
+                            # 若主模型 nuScenes attribute 判定为 parked，则直接覆盖为 parking（跳过侧端判别）
+                            if getattr(self.args, 'attr_parking_override', False):
+                                try:
+                                    att_vec = boxes[best_j].get('nuscenes_att')
+                                    if att_vec is not None:
+                                        if hasattr(att_vec, 'detach'):
+                                            att_vec = att_vec.detach().cpu().numpy()
+                                        att_vec = _np.array(att_vec).reshape(-1)
+                                        cls_id = int(boxes[best_j].get('class', 0)) - 1
+                                        # 车辆类别集合（与 visualize 中一致）
+                                        if cls_id in {0,1,2,3,4}:  # car, truck, bus, trailer, construction_vehicle
+                                            if att_vec.size >= 8:
+                                                # 对应 visualize：车辆使用 att[5:8] -> moving / parked / stopped
+                                                sub = att_vec[5:8]
+                                                if sub.size == 3 and int(_np.argmax(sub)) == 1:
+                                                    boxes[best_j]['side_state'] = 'parking'
+                                except Exception:
+                                    pass
+                    if dump_states:
+                        self._side_states_export['frames'].append({
+                            'sample_token': getattr(self, 'current_sample_token', ''),
+                            'camera_index': cam_index,
+                            'states': [{'track_id': int(tid), 'state': st} for tid, st in states.items()]
+                        })
+            self.detector.side_state_callback = _side_cb
+
         if self.args.sample is not None:
             sample = self.nusc.get("sample", self.args.sample)
             self.predictFrame(None, sample)
@@ -728,11 +1071,8 @@ class Demo(GenericDemo):
             for i, scene in enumerate(self.nusc.scene[self.args.min : self.args.max]):
                 # Define video writer
                 if self.args.save:
-                    self.initWriter(**outputSizes)
+                    self.initWriter(scene_tag=scene.get('name', f'scene_{i}'), **outputSizes)
 
-                # Only process specific scenes
-                # if not (scene["name"] in self.VAL_SCENES and ("Rain" in scene["description"] or "Night" in scene["description"])):
-                #     continue
                 print(f"Processing scene {i} {scene['name']}\n\n", end="\r")
 
                 # Predict
@@ -745,6 +1085,7 @@ class Demo(GenericDemo):
                     )
                 self.predictFrame(sample)
 
+
                 j = 0
                 while sample["next"] != "":
                     sample = self.nusc.get("sample", sample["next"])
@@ -756,6 +1097,12 @@ class Demo(GenericDemo):
         for key in self.writer:
             if self.writer[key] is not None:
                 self.writer[key].release()
+        # Dump side states JSON
+        if use_side_cls and dump_states:
+            out = os.path.join(output_dir, 'states_side.json')
+            with open(out, 'w') as f:
+                json.dump(self._side_states_export, f, indent=2)
+            print(f"Saved side states to {out}")
 
     def getImageInfo(self, sample_token):
         """

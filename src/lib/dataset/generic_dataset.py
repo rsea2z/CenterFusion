@@ -1168,7 +1168,7 @@ class GenericDemo:
     def run(self, args):
         raise NotImplementedError
 
-    def initWriter(self, **outputSizes):
+    def initWriter(self, scene_tag=None, **outputSizes):
         # Release previous writer
         for key in self.writer:
             if self.writer[key] is not None:
@@ -1177,9 +1177,15 @@ class GenericDemo:
 
         # Create new writer
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        if scene_tag:
+            # sanitize scene tag (avoid spaces or slashes)
+            safe_tag = str(scene_tag).replace('/', '_').replace(' ', '_')
+        else:
+            safe_tag = None
         for key, shape in outputSizes.items():
+            filename = f"demo_{key}.mp4" if not safe_tag else f"demo_{safe_tag}_{key}.mp4"
             self.writer[key] = cv2.VideoWriter(
-                os.path.join(self.output_dir, f"demo_{key}.mp4"),
+                os.path.join(self.output_dir, filename),
                 fourcc,
                 self.fps,
                 shape,

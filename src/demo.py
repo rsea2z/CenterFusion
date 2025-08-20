@@ -58,6 +58,49 @@ def parse_args():
         help="Show attention map.",
         action="store_true",
     )
+    parser.add_argument(
+        "--state-classify",
+        help="Enable side vehicle state classification (rule-based).",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--dump-states",
+        help="Dump per-frame states JSON next to outputs.",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--side-model",
+        help="Path to trained side state model (npz). If provided, will override rule-based.",
+        default="",
+        type=str,
+    )
+    parser.add_argument(
+        "--side-gate",
+        help="Distance gating threshold (meters) for assigning side state to a detection.",
+        default=2.5,
+        type=float,
+    )
+    parser.add_argument(
+        "--side-debug",
+        help="Print side state classification debug info per frame.",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--side-dump-feat",
+        help="Dump per-frame per-track side feature & probability CSV (path).",
+        default="",
+        type=str,
+    )
+    parser.add_argument(
+        "--hide-attr",
+        help="Hide nuScenes attribute green text overlay (vehicle.moving/parked/stopped etc.).",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--attr-parking-override",
+        help="If set, when a vehicle's nuScenes attribute = parked, force side_state='parking' (override side model).",
+        action="store_true",
+    )
 
     args = parser.parse_args()
     updateConfig(config, args)
@@ -73,8 +116,16 @@ def main(args):
     config.freeze()
 
     _, output_dir = createLogger(config)
+    # pass output_dir to demo instance via args
+    setattr(args, 'output_dir', output_dir)
     dataset = getDataset(config.DATASET.DATASET)
     demo = dataset.getDemoInstance(args)
+    # 传递隐藏属性开关到 detector
+    if hasattr(demo, 'detector') and hasattr(args, 'hide_attr'):
+        try:
+            demo.detector.hide_attr = bool(args.hide_attr)
+        except Exception:
+            pass
     demo.run()
 
 

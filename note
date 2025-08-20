@@ -1,0 +1,5 @@
+python tools/train_side_state_model.py --labels data/nuscenes/annotations/states_user_mini_val.json --out models/side_state_model.npz --use-radar
+python tools/label_states.py --cfg configs/centerfusion_debug.yaml --split mini_val --save
+python src/demo.py --cfg configs/centerfusion_debug.yaml --split mini_val --min 0 --max 2   --state-classify --side-model models/side_state_model.npz --side-gate 2.5 --dump-states --save
+python src/demo.py --cfg configs/centerfusion_debug.yaml --split mini_val --min 0 --max 10 --state-classify --side-model models/side_state_model_rf.npz --side-debug --side-dump-feat output/side_feats/run_minimal_rf.csv --save --not-show
+python tools/train_side_state_model.py --labels data/nuscenes/annotations/states_user_mini_val.json --out models/side_state_model_rf.npz --minimal --model rf --kfold 6 --smote

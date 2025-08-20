@@ -10,3 +10,5 @@ fvcore
 thop
 colorama
 pypcd4
+scikit-learn
+imbalanced-learn
