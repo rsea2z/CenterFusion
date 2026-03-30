@@ -44,7 +44,11 @@ class RuleBasedStateClassifier:
         self.stop_speed = stop_speed
         self.min_duration_s = min_duration_s
 
-    def classify_one(self, history: List[Tuple[float, np.ndarray, float, np.ndarray, float]]) -> str:
+    def classify_one(
+        self,
+        history: List[Tuple[float, np.ndarray, float, np.ndarray, float]],
+        radar_stats: list | None = None,
+    ) -> str:
         if not history:
             return "parking"
         # Use mean lateral/forward velocity from history for stability
@@ -53,6 +57,18 @@ class RuleBasedStateClassifier:
         vf_mean = float(np.mean([v[2] for v in vels]))
         speed = float(np.linalg.norm([vf_mean, vl_mean]))
         yaw_rate = compute_yaw_rate(history)
+
+        # dyn_prop parking: if most radar points say stationary, classify as parking
+        if radar_stats:
+            stationary_ratios = [
+                rs.get('dyn_stationary', 0.0)
+                for rs in radar_stats[-5:]  # recent 5 frames
+                if rs and rs.get('count', 0) > 0
+            ]
+            if stationary_ratios:
+                avg_stationary = float(np.mean(stationary_ratios))
+                if avg_stationary > 0.5:
+                    return "parking"
 
         # parking/stop
         if speed < self.stop_speed:

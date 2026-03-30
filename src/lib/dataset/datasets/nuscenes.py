@@ -786,10 +786,14 @@ class Demo(GenericDemo):
                         feat.extend([max_vl, max_yaw_rate])
                         # Radar聚合 (minimal 模式已忽略)
                         try:
-                            rstats=getattr(track,'radar_stats',[]); rsel=rstats[-10:]
+                            rstats=getattr(track,'radar_stats',[]); rsel=rstats[-20:]
                             def gather(key):
                                 return [rs.get(key) for rs in rsel if rs and rs.get('count',0)>0 and key in rs]
-                            radar_keys=['count','vx_mean','vz_mean','vr_mean','vr_std','rcs_mean','rcs_std']
+                            radar_keys=[
+                                'count','vx_mean','vz_mean','vr_mean','vr_std','rcs_mean','rcs_std',
+                                'dyn_moving','dyn_stationary','dyn_oncoming','dyn_cross','dyn_stopped',
+                                'vx_rms_mean','vy_rms_mean','valid_ratio',
+                            ]
                             def agg1(x):
                                 if len(x)==0: return [0.0,0.0,0.0,0.0]
                                 a=np.array(x,dtype=np.float32); return [float(np.mean(a)),float(np.std(a)),float(np.max(a)),float(np.min(a))]
@@ -867,6 +871,18 @@ class Demo(GenericDemo):
                                 vx = sel[8]; vz = sel[9]
                                 vr = _np.sqrt(vx**2 + vz**2)
                                 rcs = sel[5]
+                                # 质量过滤：is_quality_valid (idx 10)
+                                valid_mask = (sel[10] == 1)
+                                valid_sel = sel[:, valid_mask] if valid_mask.sum() > 0 else sel
+                                n = valid_sel.shape[1] if valid_sel.shape[1] > 0 else 1
+                                # dyn_prop (idx 3): 0=moving, 1=stationary, 2=oncoming,
+                                # 5=crossing_stationary, 6=crossing_moving, 7=stopped
+                                dyn = valid_sel[3] if valid_sel.shape[1] > 0 else _np.array([], dtype=_np.int32)
+                                dyn_moving = float(_np.sum(dyn == 0)) / n
+                                dyn_stationary = float(_np.sum(dyn == 1)) / n
+                                dyn_oncoming = float(_np.sum(dyn == 2)) / n
+                                dyn_cross = float(_np.sum((dyn == 5) | (dyn == 6))) / n
+                                dyn_stopped = float(_np.sum(dyn == 7)) / n
                                 radar_feat = {
                                     'count': int(sel.shape[1]),
                                     'vx_mean': float(_np.mean(vx)),
@@ -875,6 +891,16 @@ class Demo(GenericDemo):
                                     'vr_std': float(_np.std(vr)),
                                     'rcs_mean': float(_np.mean(rcs)),
                                     'rcs_std': float(_np.std(rcs)),
+                                    # dyn_prop 聚合（核心新特征）
+                                    'dyn_moving': dyn_moving,
+                                    'dyn_stationary': dyn_stationary,
+                                    'dyn_oncoming': dyn_oncoming,
+                                    'dyn_cross': dyn_cross,
+                                    'dyn_stopped': dyn_stopped,
+                                    # 质量特征
+                                    'vx_rms_mean': float(_np.mean(valid_sel[16])) if valid_sel.shape[1] > 0 else 0.0,
+                                    'vy_rms_mean': float(_np.mean(valid_sel[17])) if valid_sel.shape[1] > 0 else 0.0,
+                                    'valid_ratio': float(valid_mask.sum()) / max(sel.shape[1], 1),
                                 }
                         dets.append({
                             'class': cls_id,

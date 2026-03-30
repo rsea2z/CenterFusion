@@ -31,7 +31,7 @@ def extract_features(track: dict, use_radar: bool = False):
     if len(hist) < 2:
         hist2 = hist
     else:
-        hist2 = hist[-10:]  # last N
+        hist2 = hist[-20:]  # last N
 
     # 位置差分推导速度（更鲁棒，避免 detector velocity 头为零）
     xs, zs, ts, yaws = [], [], [], []
@@ -118,6 +118,10 @@ def extract_features(track: dict, use_radar: bool = False):
         vr_stds = []
         rcs_means = []
         rcs_stds = []
+        # dyn_prop 特征
+        dyn_movings, dyn_stationary, dyn_oncoming, dyn_cross, dyn_stopped = [], [], [], [], []
+        # 质量特征
+        valid_ratios, vx_rms_means, vy_rms_means = [], [], []
         for hfull in hist2:
             # original saved format: history entries have keys including 'radar'
             radar = hfull.get('radar')
@@ -129,19 +133,38 @@ def extract_features(track: dict, use_radar: bool = False):
                 vr_stds.append(radar.get('vr_std', 0.0))
                 rcs_means.append(radar.get('rcs_mean', 0.0))
                 rcs_stds.append(radar.get('rcs_std', 0.0))
+                # dyn_prop 比例
+                dyn_movings.append(radar.get('dyn_moving', 0.0))
+                dyn_stationary.append(radar.get('dyn_stationary', 0.0))
+                dyn_oncoming.append(radar.get('dyn_oncoming', 0.0))
+                dyn_cross.append(radar.get('dyn_cross', 0.0))
+                dyn_stopped.append(radar.get('dyn_stopped', 0.0))
+                # 质量特征
+                valid_ratios.append(radar.get('valid_ratio', 1.0))
+                vx_rms_means.append(radar.get('vx_rms_mean', 0.0))
+                vy_rms_means.append(radar.get('vy_rms_mean', 0.0))
         def agg1(x):
             if len(x) == 0:
                 return [0.0, 0.0, 0.0, 0.0]
             arr = np.array(x, dtype=np.float32)
             return [float(np.mean(arr)), float(np.std(arr)), float(np.max(arr)), float(np.min(arr))]
-        # For counts we still apply same agg
-    feat += agg1(radar_counts)  # +4
-    feat += agg1(vx_means)      # +4
-    feat += agg1(vz_means)      # +4
-    feat += agg1(vr_means)      # +4
-    feat += agg1(vr_stds)       # +4
-    feat += agg1(rcs_means)     # +4
-    feat += agg1(rcs_stds)      # +4
+        feat += agg1(radar_counts)  # +4
+        feat += agg1(vx_means)      # +4
+        feat += agg1(vz_means)      # +4
+        feat += agg1(vr_means)      # +4
+        feat += agg1(vr_stds)       # +4
+        feat += agg1(rcs_means)     # +4
+        feat += agg1(rcs_stds)      # +4
+        # dyn_prop 特征聚合
+        feat += agg1(dyn_movings)      # +4
+        feat += agg1(dyn_stationary)  # +4
+        feat += agg1(dyn_oncoming)     # +4
+        feat += agg1(dyn_cross)        # +4
+        feat += agg1(dyn_stopped)     # +4
+        # 质量特征聚合
+        feat += agg1(valid_ratios)   # +4
+        feat += agg1(vx_rms_means)  # +4
+        feat += agg1(vy_rms_means)   # +4
     return np.array(feat, dtype=np.float32)
 
 

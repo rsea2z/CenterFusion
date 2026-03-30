@@ -179,6 +179,17 @@ def main():
                                 vx = sel[8]; vz = sel[9]
                                 vr = np.sqrt(vx**2 + vz**2)
                                 rcs = sel[5]
+                                # 质量过滤：is_quality_valid (idx 10)
+                                valid_mask = (sel[10] == 1)
+                                valid_sel = sel[:, valid_mask] if valid_mask.sum() > 0 else sel
+                                n = valid_sel.shape[1] if valid_sel.shape[1] > 0 else 1
+                                # dyn_prop (idx 3): 0=moving, 1=stationary, 2=oncoming, 5=crossing, 7=stopped
+                                dyn = valid_sel[3] if valid_sel.shape[1] > 0 else np.array([], dtype=np.int32)
+                                dyn_moving = float(np.sum(dyn == 0)) / n
+                                dyn_stationary = float(np.sum(dyn == 1)) / n
+                                dyn_oncoming = float(np.sum(dyn == 2)) / n
+                                dyn_cross = float(np.sum((dyn == 5) | (dyn == 6))) / n
+                                dyn_stopped = float(np.sum(dyn == 7)) / n
                                 radar_feat = {
                                     'count': int(sel.shape[1]),
                                     'vx_mean': float(np.mean(vx)),
@@ -187,6 +198,14 @@ def main():
                                     'vr_std': float(np.std(vr)),
                                     'rcs_mean': float(np.mean(rcs)),
                                     'rcs_std': float(np.std(rcs)),
+                                    'dyn_moving': dyn_moving,
+                                    'dyn_stationary': dyn_stationary,
+                                    'dyn_oncoming': dyn_oncoming,
+                                    'dyn_cross': dyn_cross,
+                                    'dyn_stopped': dyn_stopped,
+                                    'vx_rms_mean': float(np.mean(valid_sel[16])) if valid_sel.shape[1] > 0 else 0.0,
+                                    'vy_rms_mean': float(np.mean(valid_sel[17])) if valid_sel.shape[1] > 0 else 0.0,
+                                    'valid_ratio': float(valid_mask.sum()) / max(sel.shape[1], 1),
                                 }
                         dets.append({
                             'class': int(p['class']),
@@ -210,7 +229,7 @@ def main():
                 mapping = tracker.update(dets_list[fi], time_list[fi])
                 mapping_list[fi] = mapping
                 # update suggestions for active tracks at this frame
-                suggestions = {tid: rb.classify_one(tr.history) for tid, tr in tracker.get_active_tracks().items()}
+                suggestions = {tid: rb.classify_one(tr.history, radar_stats=tr.radar_stats) for tid, tr in tracker.get_active_tracks().items()}
                 suggests_list[fi] = suggestions
 
             # Display current frame if needed (dirty_display set when labels changed or frame changed)
