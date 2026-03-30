@@ -183,6 +183,7 @@ def updateDatasetAndModelConfig(config, dataset, output_dir=None):
     # save config
     if output_dir is not None:
         config.OUTPUT_DIR = output_dir
+        os.makedirs(output_dir, exist_ok=True)
         with open(os.path.join(output_dir, "config.yaml"), "w") as f:
             f.write(config.dump())
 

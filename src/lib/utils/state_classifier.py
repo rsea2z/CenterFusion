@@ -1,3 +1,7 @@
+"""
+Simple rule-based vehicle state classifier with short-time smoothing.
+States: going_straight | going_left | going_right | parking
+"""
 from __future__ import annotations
 
 from typing import Dict, List, Tuple
@@ -22,22 +26,20 @@ def compute_yaw_rate(history: List[Tuple[float, np.ndarray, float, np.ndarray, f
 
 class RuleBasedStateClassifier:
     """
-    Simple rule-based vehicle state classifier with short-time smoothing.
-    States: going_straight | lane_change | turning | parking
+    Simple rule-based vehicle state classifier.
+    States: going_straight | going_left | going_right | parking
     """
 
     def __init__(
         self,
         speed_thresh_move: float = 1.0,   # m/s
         lat_speed_thresh: float = 0.6,    # m/s
-        yaw_rate_turn: float = np.deg2rad(10.0),  # rad/s
         yaw_rate_straight: float = np.deg2rad(5.0),
         stop_speed: float = 0.2,
         min_duration_s: float = 0.5,
     ):
         self.speed_thresh_move = speed_thresh_move
         self.lat_speed_thresh = lat_speed_thresh
-        self.yaw_rate_turn = yaw_rate_turn
         self.yaw_rate_straight = yaw_rate_straight
         self.stop_speed = stop_speed
         self.min_duration_s = min_duration_s
@@ -45,27 +47,27 @@ class RuleBasedStateClassifier:
     def classify_one(self, history: List[Tuple[float, np.ndarray, float, np.ndarray, float]]) -> str:
         if not history:
             return "parking"
-        t2, _, yaw2, vel2, _ = history[-1]
-        # velocity in camera coords: vel2 = [vx, vy, vz]; forward≈z, lateral≈x
-        v_forward = float(vel2[2])
-        v_lateral = float(vel2[0])
-        speed = float(np.linalg.norm([v_forward, v_lateral]))
+        # Use mean lateral/forward velocity from history for stability
+        vels = [h[3] for h in history]
+        vl_mean = float(np.mean([v[0] for v in vels]))
+        vf_mean = float(np.mean([v[2] for v in vels]))
+        speed = float(np.linalg.norm([vf_mean, vl_mean]))
         yaw_rate = compute_yaw_rate(history)
 
         # parking/stop
         if speed < self.stop_speed:
             return "parking"
 
-        # turning
-        if abs(yaw_rate) >= self.yaw_rate_turn:
-            return "turning"
+        # going_right: positive lateral speed (vehicle moving to its right in camera frame)
+        if vl_mean > self.lat_speed_thresh and abs(yaw_rate) < self.yaw_rate_straight:
+            return "going_right"
 
-        # lane change (lateral motion but heading change small)
-        if abs(v_lateral) >= self.lat_speed_thresh and abs(yaw_rate) < self.yaw_rate_straight:
-            return "lane_change"
+        # going_left: negative lateral speed (vehicle moving to its left in camera frame)
+        if vl_mean < -self.lat_speed_thresh and abs(yaw_rate) < self.yaw_rate_straight:
+            return "going_left"
 
-        # default moving straight
-        if speed >= self.speed_thresh_move and abs(yaw_rate) < self.yaw_rate_straight:
+        # default: going straight
+        if speed >= self.speed_thresh_move:
             return "going_straight"
 
         # fallback

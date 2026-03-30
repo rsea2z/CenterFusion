@@ -20,8 +20,8 @@ except ImportError:  # graceful if dependency missing
 
 STATE_TO_ID = {
     'going_straight': 0,
-    'lane_change': 1,
-    'turning': 2,
+    'going_left': 1,
+    'going_right': 2,
     'parking': 3,
 }
 

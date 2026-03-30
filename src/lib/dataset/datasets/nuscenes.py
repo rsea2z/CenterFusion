@@ -929,16 +929,16 @@ class Demo(GenericDemo):
                                         ratio_lat_forward = float(feat[0,24])
                                         yaw_rate = float(feat[0,12])
                                         vf_mean = float(feat[0,0])
-                                        vl_mean = float(feat[0,4])
+                                        vl_mean = float(feat[0,5])   # vls agg: mean at idx 5
                                         speed_mean = float(feat[0,8])
                                     else:
                                         ratio_lat_forward=0; dir_changes=0; yaw_rate=0; vf_mean=0; vl_mean=0; speed_mean=0
-                                    # 规则
-                                    if ratio_lat_forward>0.6 and dir_changes>0:
-                                        sid = self._side_state_to_id.get('lane_change', sid)
-                                    elif abs(yaw_rate)>0.15 and speed_mean<3.0:
-                                        sid = self._side_state_to_id.get('turning', sid)
-                                    elif speed_mean<0.3 and abs(vf_mean)<0.3:
+                                    # 规则: 基于横向速度方向判断左/右行驶
+                                    if vl_mean > 0.5:
+                                        sid = self._side_state_to_id.get('going_right', sid)
+                                    elif vl_mean < -0.5:
+                                        sid = self._side_state_to_id.get('going_left', sid)
+                                    elif speed_mean < 0.3 and abs(vf_mean) < 0.3:
                                         sid = self._side_state_to_id.get('parking', sid)
                             states[tid] = self._side_id_to_state.get(sid, '')
                             # 可选写CSV

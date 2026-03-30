@@ -43,8 +43,8 @@ from lib.utils.pointcloud import RadarPointCloudWithVelocity as RadarPointCloud
 
 STATE_KEYS = {
     ord('1'): 'going_straight',
-    ord('2'): 'lane_change',
-    ord('3'): 'turning',
+    ord('2'): 'going_left',
+    ord('3'): 'going_right',
     ord('4'): 'parking',
 }
 
