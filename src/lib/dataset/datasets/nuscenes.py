@@ -725,10 +725,23 @@ class Demo(GenericDemo):
                 self._side_state_to_id = _obj(data['STATE_TO_ID'])
                 self._side_id_to_state = {v: k for k, v in self._side_state_to_id.items()}
                 self._side_feature_dim = int(_obj(data.get('feature_dim', 0)) or 0)
+                self._side_two_stage = bool(data.get('two_stage', False))
+                self._side_dyn_threshold = float(data.get('dyn_threshold', 0.4))
+                def _compute_dyn_stationary(track):
+                    """Average dyn_stationary from last 5 radar observations."""
+                    hist = track.history[-5:]
+                    vals = []
+                    for h in hist:
+                        radar = getattr(track, 'radar_stats', [None]*len(track.history))
+                        idx = track.history.index(h) if h in track.history else -1
+                        if idx >= 0 and idx < len(radar) and radar[idx]:
+                            v = radar[idx].get('dyn_stationary', 0.0)
+                            vals.append(v)
+                    return float(_np.mean(vals)) if vals else 0.0
                 def _extract_features(track):
                     import numpy as np
                     # 与训练阶段同步：用位置差分推导速度
-                    hist = track.history[-10:]
+                    hist = track.history[-20:]
                     xs, zs, ts, yaws = [], [], [], []
                     for t, loc, yaw, vel, score in hist:
                         xs.append(float(loc[0])); zs.append(float(loc[2])); ts.append(float(t)); yaws.append(float(yaw))
@@ -931,7 +944,16 @@ class Demo(GenericDemo):
                                     feat = (feat - self._side_feat_mean.reshape(1,-1)) / (self._side_feat_std.reshape(1,-1)+1e-6)
                                 except Exception:
                                     pass
-                            sid = int(self._side_clf.predict(feat)[0])
+                            # Two-stage: use dyn_stationary rule for parking
+                            dyn_val = 0.0
+                            if self._side_two_stage and hasattr(tr, 'radar_stats') and tr.radar_stats:
+                                radar_recent = tr.radar_stats[-5:]
+                                vals = [r.get('dyn_stationary', 0.0) for r in radar_recent if r and r.get('count', 0) > 0]
+                                dyn_val = float(_np.mean(vals)) if vals else 0.0
+                            if self._side_two_stage and dyn_val >= self._side_dyn_threshold:
+                                sid = int(self._side_state_to_id.get('parking', 3))
+                            else:
+                                sid = int(self._side_clf.predict(feat)[0])
                             prob = None; pmax=1.0; pentropy=0.0
                             if hasattr(self._side_clf, 'predict_proba'):
                                 prob = self._side_clf.predict_proba(feat)[0]
