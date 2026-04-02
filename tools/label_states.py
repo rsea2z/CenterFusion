@@ -91,8 +91,21 @@ def main():
         verbose=True,
     )
 
-    labels = { 'tracks': [] }
-    track_label_map = {}  # tid -> state
+    # Load existing labels so saves accumulate (don't overwrite previous scenes)
+    labels_file = Path('data/nuscenes/annotations/states_user_mini_val.json')
+    if labels_file.exists():
+        try:
+            labels = json.loads(labels_file.read_text())
+        except Exception:
+            labels = {'tracks': []}
+    else:
+        labels = {'tracks': []}
+    # Global registry: (scene_idx, tid) -> track_data, avoids cross-scene ID collision
+    global_saved = {}
+    for tr in labels.get('tracks', []):
+        key = (tr.get('scene_idx', -1), tr.get('track_id', -1))
+        global_saved[key] = tr
+    track_label_map = {}  # tid -> state (current scene only)
     paused = not args.auto_play
     selected_tid = None
     max_show = 20
@@ -111,8 +124,8 @@ def main():
     total_scenes = len(nusc.scene)
     start_i = max(0, int(args.min))
     end_i = min(total_scenes, int(args.max)) if args.max is not None else total_scenes
-    for si in range(start_i, end_i):
-        scene = nusc.scene[si]
+    for si, scene in enumerate(nusc.scene[start_i:end_i]):
+        scene_idx = start_i + si  # global scene index for unique (scene_idx, tid) key
         # Build ordered list of sample tokens for this scene
         frame_tokens = []
         stoken = scene['first_sample_token']
@@ -265,18 +278,22 @@ def main():
                 if show_help:
                     cv2.putText(vis, 'Space=Pause/Play  n=Next  b=Prev  Click=Select  1/2/3/4=Label  s=Save  v=ToggleTopK  h=Help  q=Quit', (10, y0), 0, 0.5, (0,255,255), 1)
                     y0 += 18
-                cv2.putText(vis, f'Scene {si+1}/{end_i}  Frame {frame_idx+1}/{len(frame_tokens)}  Paused={paused}  Selected={selected_tid if selected_tid else "None"}', (10, y0), 0, 0.5, (0,255,0), 1)
+                cv2.putText(vis, f'Scene {scene_idx+1}/{total_scenes}  Frame {frame_idx+1}/{len(frame_tokens)}  Paused={paused}  Selected={selected_tid if selected_tid else "None"}', (10, y0), 0, 0.5, (0,255,0), 1)
                 cv2.imshow('label_states', vis)
                 dirty_display = False
 
-            # Save snapshot helper (current track states)
+            # Save snapshot helper (merge with existing labels to avoid overwriting previous scenes)
             def save_snapshot():
-                labels['tracks'] = []
-                # use latest tracker (rebuilt up to frame_idx)
                 for tid, tr in tracker.get_active_tracks().items():
-                    labels['tracks'].append({
+                    key = (scene_idx, tid)
+                    # Use rule-based suggestion as default only if not already labeled
+                    default_state = suggests_list[frame_idx].get(tid, 'going_straight')
+                    saved_state = global_saved.get(key, {}).get('state', None)
+                    state = track_label_map.get(tid, saved_state or default_state)
+                    track_data = {
+                        'scene_idx': scene_idx,
                         'track_id': tid,
-                        'state': track_label_map.get(tid, suggests_list[frame_idx].get(tid, 'going_straight')),
+                        'state': state,
                         'history': [
                             {
                                 't': float(t),
@@ -287,11 +304,13 @@ def main():
                                 'radar': tr.radar_stats[i] if i < len(tr.radar_stats) else None,
                             } for (i, (t, loc, yaw, vel, score)) in enumerate(tr.history)
                         ]
-                    })
+                    }
+                    global_saved[key] = track_data
+                labels['tracks'] = list(global_saved.values())
                 out = Path('data/nuscenes/annotations/states_user_mini_val.json')
                 out.parent.mkdir(parents=True, exist_ok=True)
                 out.write_text(json.dumps(labels, indent=2))
-                print(f'Saved labels to {out}')
+                print(f'Saved {len(labels["tracks"])} tracks from {scene_idx+1} scene(s) to {out}')
 
             # Handle interaction loop
             k = cv2.waitKey(0 if paused else 1) & 0xFF
