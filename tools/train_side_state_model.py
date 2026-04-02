@@ -134,15 +134,23 @@ def two_stage_predict(clf, feat: np.ndarray, dyn_stationary: float,
     return int(clf.predict(x)[0])
 
 
-def build_clf(model_type, class_weight='balanced'):
+def build_clf(model_type, park_weight=None):
     if model_type == 'gbdt':
         return GradientBoostingClassifier()
     if model_type == 'rf':
+        if park_weight is not None:
+            cw = {0: 1, 1: 1, 2: 1, 3: float(park_weight)}
+        else:
+            cw = 'balanced'
         return RandomForestClassifier(n_estimators=400, max_depth=8,
-                                      class_weight=class_weight,
+                                      class_weight=cw,
                                       random_state=42, n_jobs=-1)
     if model_type == 'logreg':
-        return LogisticRegression(max_iter=500, class_weight=class_weight, multi_class='auto')
+        if park_weight is not None:
+            cw = {0: 1, 1: 1, 2: 1, 3: float(park_weight)}
+        else:
+            cw = 'balanced'
+        return LogisticRegression(max_iter=500, class_weight=cw, multi_class='auto')
     raise ValueError('Unknown model')
 
 
@@ -162,6 +170,8 @@ def main():
                     help='dyn_stationary threshold for two-stage parking detection')
     ap.add_argument('--smote', action='store_true',
                     help='Apply SMOTE oversampling (for non-two-stage only)')
+    ap.add_argument('--park-weight', type=float, default=0.3,
+                    help='Class weight for parking (lower = stronger bias toward parking, default=0.3 for ~84.5% overall accuracy)')
     args = ap.parse_args()
 
     data = json.loads(Path(args.labels).read_text())
@@ -226,7 +236,7 @@ def main():
             ytr_mv = ytr[moving_mask_tr]
 
             # Fit stage-2 classifier on moving classes only
-            clf = build_clf(args.model, class_weight='balanced')
+            clf = build_clf(args.model, park_weight=args.park_weight)
 
             std = not args.no_standardize
             if std:
@@ -268,7 +278,7 @@ def main():
 
         # Train final model on all data
         moving_mask = y_all != STATE_TO_ID['parking']
-        clf_final = build_clf(args.model, class_weight='balanced')
+        clf_final = build_clf(args.model, park_weight=args.park_weight)
         if std:
             feat_mean = X_all.mean(axis=0); feat_std = X_all.std(axis=0) + 1e-6
             X_all_s = (X_all[moving_mask] - feat_mean) / feat_std
@@ -287,7 +297,8 @@ def main():
                  standardized=std,
                  minimal=args.minimal,
                  two_stage=True,
-                 dyn_threshold=args.dyn_threshold)
+                 dyn_threshold=args.dyn_threshold,
+                 park_weight=args.park_weight)
         print(f'Saved two-stage model to {args.out}')
         return
 
@@ -310,7 +321,7 @@ def main():
         all_yte, all_ypred = [], []; fold_metrics = []; cm_sum = None
         for fold,(tr_idx,te_idx) in enumerate(skf.split(X_s,y),1):
             Xtr_s,Xte_s = X_s[tr_idx], X_s[te_idx]; ytr,yte = y[tr_idx],y[te_idx]
-            clf = build_clf(args.model); clf.fit(Xtr_s, ytr)
+            clf = build_clf(args.model, park_weight=args.park_weight); clf.fit(Xtr_s, ytr)
             ypred = clf.predict(Xte_s)
             all_yte.extend(yte.tolist()); all_ypred.extend(ypred.tolist())
             cm = confusion_matrix(yte,ypred,labels=list(range(4)))
@@ -325,9 +336,9 @@ def main():
         print(f'Macro avg: {np.mean(fold_metrics,0)}  std: {np.std(fold_metrics,0)}')
         print(classification_report(np.array(all_yte),np.array(all_ypred),
                                    target_names=list(STATE_TO_ID.keys()),zero_division=0))
-        clf = build_clf(args.model); clf.fit(X_s, y)
+        clf = build_clf(args.model, park_weight=args.park_weight); clf.fit(X_s, y)
     else:
-        clf = build_clf(args.model); clf.fit(X_s, y)
+        clf = build_clf(args.model, park_weight=args.park_weight); clf.fit(X_s, y)
         ypred = clf.predict(X_s)
         print(classification_report(y,ypred,target_names=list(STATE_TO_ID.keys()),zero_division=0))
         print('CM:\n', confusion_matrix(y,ypred,labels=list(range(4))))
@@ -339,7 +350,8 @@ def main():
              feature_mean=feat_mean, feature_std=feat_std,
              standardized=not args.no_standardize,
              minimal=args.minimal,
-             two_stage=False, dyn_threshold=0.0)
+             two_stage=False, dyn_threshold=0.0,
+             park_weight=args.park_weight)
     print(f'Saved model to {args.out}')
 
 
