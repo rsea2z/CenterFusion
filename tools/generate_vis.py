@@ -3,6 +3,9 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
+
+plt.rcParams['font.sans-serif'] = ['SimSun', 'WenQuanYi Micro Hei', 'DejaVu Sans']
+plt.rcParams['axes.unicode_minus'] = False
 from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import StratifiedKFold
 from sklearn.ensemble import RandomForestClassifier
@@ -57,16 +60,29 @@ all_true = np.array(all_true)
 all_preds = np.array(all_preds)
 cm = confusion_matrix(all_true, all_preds, labels=list(range(4)))
 
-fig, ax = plt.subplots(figsize=(7, 6))
-sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+# 行归一化：每行除以该行总数，显示百分比
+cm_norm = cm.astype('float') / cm.sum(axis=1, keepdims=True) * 100
+
+fig, ax = plt.subplots(figsize=(7.5, 6.5))
+# 单元格中显示：百分比 + 原始数量
+annot = np.empty_like(cm_norm, dtype=object)
+for i in range(4):
+    for j in range(4):
+        annot[i, j] = f'{cm_norm[i, j]:.1f}%\n({cm[i, j]})'
+
+sns.heatmap(cm_norm, annot=annot, fmt='', cmap='Blues',
             xticklabels=CLASSES, yticklabels=CLASSES,
-            ax=ax, annot_kws={'size': 14}, cbar_kws={'label': '样本数'},
-            linewidths=0.5, linecolor='white')
-ax.set_xlabel('Predicted Class', fontsize=13)
-ax.set_ylabel('True Class', fontsize=13)
-ax.set_title('Confusion Matrix (5-fold CV, n=808)', fontsize=14, fontweight='bold')
-plt.xticks(fontsize=11)
-plt.yticks(fontsize=11, rotation=0)
+            ax=ax, annot_kws={'size': 13}, cbar_kws={'label': '占该类真实样本的比例 (%)'},
+            linewidths=0.5, linecolor='white', vmin=0, vmax=100)
+ax.set_xlabel('预测类别', fontsize=14)
+ax.set_ylabel('真实类别', fontsize=14)
+ax.set_title('混淆矩阵 (5折交叉验证, n=808)', fontsize=15, fontweight='bold', pad=12)
+plt.xticks(fontsize=12)
+plt.yticks(fontsize=12, rotation=0)
+# 在对角线格子加粗边框
+for i in range(4):
+    ax.add_patch(plt.Rectangle((i, i), 1, 1, fill=False,
+                                edgecolor='darkblue', linewidth=2.5))
 plt.tight_layout()
 plt.savefig(outdir / 'confusion_matrix.png', dpi=150, bbox_inches='tight')
 plt.close()
@@ -90,23 +106,23 @@ x = np.arange(4)
 width = 0.25
 
 fig, ax = plt.subplots(figsize=(9, 5.5))
-bars_p = ax.bar(x - width, prec, width, label='Precision', color='#3498db', alpha=0.85, edgecolor='white')
-bars_r = ax.bar(x,       recall, width, label='Recall', color='#e74c3c', alpha=0.85, edgecolor='white')
-bars_f = ax.bar(x + width, f1_scores, width, label='F1 Score', color='#2ecc71', alpha=0.85, edgecolor='white')
+bars_p = ax.bar(x - width, prec, width, label='精确率', color='#3498db', alpha=0.85, edgecolor='white')
+bars_r = ax.bar(x,       recall, width, label='召回率', color='#e74c3c', alpha=0.85, edgecolor='white')
+bars_f = ax.bar(x + width, f1_scores, width, label='F1分数', color='#2ecc71', alpha=0.85, edgecolor='white')
 
 for bars in [bars_p, bars_r, bars_f]:
     for bar in bars:
         h = bar.get_height()
         if h > 0.05:
             ax.text(bar.get_x() + bar.get_width() / 2, h + 0.01, f'{h:.1%}',
-                    ha='center', va='bottom', fontsize=9)
+                    ha='center', va='bottom', fontsize=10)
 
-ax.set_ylabel('Score', fontsize=12)
-ax.set_title('Per-Class Performance Metrics (5-fold CV)', fontsize=14, fontweight='bold')
+ax.set_ylabel('分数', fontsize=12)
+ax.set_title('各状态类别性能指标 (5折交叉验证)', fontsize=14, fontweight='bold')
 ax.set_xticks(x)
-ax.set_xticklabels([f'{CLASSES[i]}\n({STATE_NAMES_CN[ID_TO_STATE[i]]})' for i in range(4)], fontsize=10)
-ax.set_ylim(0, 1.14)
-ax.legend(fontsize=10, loc='upper right')
+ax.set_xticklabels(CLASSES, fontsize=12)
+ax.set_ylim(0, 1.18)
+ax.legend(fontsize=11, loc='upper right')
 ax.grid(axis='y', alpha=0.3)
 ax.spines['top'].set_visible(False)
 ax.spines['right'].set_visible(False)
@@ -131,20 +147,20 @@ accs = [0.583, 0.670, 0.690, 0.715, 0.792, 0.845]
 stds = [0.021, 0.020, 0.018, 0.020, 0.009, 0.005]
 colors = ['#bdc3c7', '#3498db', '#3498db', '#9b59b6', '#e67e22', '#27ae60']
 
-fig, ax = plt.subplots(figsize=(10, 5))
+fig, ax = plt.subplots(figsize=(10, 5.5))
 bars = ax.bar(range(len(stages)), accs, color=colors, alpha=0.85, edgecolor='white', width=0.55)
 for bar, acc, std in zip(bars, accs, stds):
     ax.text(bar.get_x() + bar.get_width() / 2, acc + 0.02,
-            f'{acc:.1%}', ha='center', va='bottom', fontsize=10, fontweight='bold')
+            f'{acc:.1%}', ha='center', va='bottom', fontsize=11, fontweight='bold')
 
-ax.axhline(y=0.80, color='red', linestyle='--', alpha=0.6, linewidth=1.2, label='80% baseline')
-ax.axhline(y=0.845, color='green', linestyle='--', alpha=0.6, linewidth=1.2, label='Final 84.5%')
-ax.set_ylabel('Accuracy', fontsize=12)
-ax.set_title('Accuracy Across Optimization Stages', fontsize=14, fontweight='bold')
+ax.axhline(y=0.80, color='red', linestyle='--', alpha=0.6, linewidth=1.5, label='80%基线')
+ax.axhline(y=0.845, color='green', linestyle='--', alpha=0.6, linewidth=1.5, label='最终84.5%')
+ax.set_ylabel('准确率', fontsize=13)
+ax.set_title('优化各阶段准确率变化', fontsize=15, fontweight='bold')
 ax.set_xticks(range(len(stages_cn)))
-ax.set_xticklabels(stages_cn, fontsize=9)
+ax.set_xticklabels(stages_cn, fontsize=10)
 ax.set_ylim(0, 1.0)
-ax.legend(fontsize=10)
+ax.legend(fontsize=11)
 ax.grid(axis='y', alpha=0.3)
 ax.spines['top'].set_visible(False)
 ax.spines['right'].set_visible(False)
@@ -164,7 +180,7 @@ for tr in data.get('tracks', []):
     dyn = compute_dyn_stationary(tr)
     dyn_by_class[sid].append(dyn)
 
-fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+fig, axes = plt.subplots(1, 2, figsize=(13, 5.5))
 
 ax = axes[0]
 parts = ax.violinplot([dyn_by_class[i] for i in range(4)],
@@ -174,12 +190,12 @@ for pc in parts['bodies']:
 parts['cmeans'].set_color('red')
 parts['cmedians'].set_color('orange')
 ax.set_xticks(range(4))
-ax.set_xticklabels(CLASSES, fontsize=11)
-ax.set_ylabel('dyn_stationary Value', fontsize=11)
-ax.set_title('dyn_stationary Distribution (Violin)', fontsize=12, fontweight='bold')
+ax.set_xticklabels(CLASSES, fontsize=12)
+ax.set_ylabel('dyn_stationary 值', fontsize=12)
+ax.set_title('dyn_stationary 分布（小提琴图）', fontsize=12, fontweight='bold')
 ax.grid(axis='y', alpha=0.3)
-ax.axhline(y=0.4, color='red', linestyle='--', alpha=0.6, label='Threshold=0.4')
-ax.legend(fontsize=9)
+ax.axhline(y=0.4, color='red', linestyle='--', alpha=0.6, linewidth=1.5, label='阈值0.4')
+ax.legend(fontsize=10)
 
 ax = axes[1]
 colors_box = ['#3498db', '#e74c3c', '#f39c12', '#2ecc71']
@@ -189,16 +205,16 @@ for patch, color in zip(bp['boxes'], colors_box):
     patch.set_facecolor(color)
     patch.set_alpha(0.7)
 ax.set_xticks(range(4))
-ax.set_xticklabels(CLASSES, fontsize=11)
-ax.set_ylabel('dyn_stationary Value', fontsize=11)
-ax.set_title('dyn_stationary Distribution (Box)', fontsize=12, fontweight='bold')
+ax.set_xticklabels(CLASSES, fontsize=12)
+ax.set_ylabel('dyn_stationary 值', fontsize=12)
+ax.set_title('dyn_stationary 分布（箱线图）', fontsize=12, fontweight='bold')
 ax.grid(axis='y', alpha=0.3)
-ax.axhline(y=0.4, color='red', linestyle='--', alpha=0.6, label='Threshold=0.4')
-ax.legend(fontsize=9)
+ax.axhline(y=0.4, color='red', linestyle='--', alpha=0.6, linewidth=1.5, label='阈值0.4')
+ax.legend(fontsize=10)
 ax.spines['top'].set_visible(False)
 ax.spines['right'].set_visible(False)
 
-plt.suptitle('dyn_stationary Distribution by Class\n(Key Feature for Parking Detection)', fontsize=13, fontweight='bold', y=1.01)
+plt.suptitle('各状态类别的 dyn_stationary 特征分布\n（停车检测关键特征）', fontsize=13, fontweight='bold', y=1.02)
 plt.tight_layout()
 plt.savefig(outdir / 'dyn_stationary_distribution.png', dpi=150, bbox_inches='tight')
 plt.close()
@@ -208,51 +224,63 @@ print("  -> dyn_stationary_distribution.png")
 print("Generating combined summary figure...")
 from matplotlib.gridspec import GridSpec
 fig = plt.figure(figsize=(16, 12))
-gs = GridSpec(2, 2, figure=fig, hspace=0.35, wspace=0.30)
+gs = GridSpec(2, 2, figure=fig, hspace=0.38, wspace=0.32)
 
+# CM - row normalized
 ax1 = fig.add_subplot(gs[0, 0])
-sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=CLASSES,
-            yticklabels=CLASSES, ax=ax1, annot_kws={'size': 13},
-            linewidths=0.5, linecolor='white', cbar_kws={'shrink': 0.8})
-ax1.set_xlabel('Predicted', fontsize=11)
-ax1.set_ylabel('True', fontsize=11)
-ax1.set_title('Confusion Matrix', fontsize=12, fontweight='bold')
+annot_s = np.empty_like(cm_norm, dtype=object)
+for i in range(4):
+    for j in range(4):
+        annot_s[i, j] = f'{cm_norm[i, j]:.1f}%'
+sns.heatmap(cm_norm, annot=annot_s, fmt='', cmap='Blues', xticklabels=CLASSES,
+            yticklabels=CLASSES, ax=ax1, annot_kws={'size': 12},
+            linewidths=0.5, linecolor='white', cbar_kws={'shrink': 0.8},
+            vmin=0, vmax=100)
+ax1.set_xlabel('预测类别', fontsize=12)
+ax1.set_ylabel('真实类别', fontsize=12)
+ax1.set_title('混淆矩阵（行归一化%）', fontsize=13, fontweight='bold')
+for i in range(4):
+    ax1.add_patch(plt.Rectangle((i, i), 1, 1, fill=False, edgecolor='darkblue', linewidth=2.5))
 
+# Per-class metrics
 ax2 = fig.add_subplot(gs[0, 1])
-bars_p = ax2.bar(x - width, prec, width, label='Precision', color='#3498db', alpha=0.85)
-bars_r = ax2.bar(x, recall, width, label='Recall', color='#e74c3c', alpha=0.85)
-bars_f = ax2.bar(x + width, f1_scores, width, label='F1', color='#2ecc71', alpha=0.85)
+bars_p = ax2.bar(x - width, prec, width, label='精确率', color='#3498db', alpha=0.85)
+bars_r = ax2.bar(x, recall, width, label='召回率', color='#e74c3c', alpha=0.85)
+bars_f = ax2.bar(x + width, f1_scores, width, label='F1分数', color='#2ecc71', alpha=0.85)
 for bars in [bars_p, bars_r, bars_f]:
     for bar in bars:
         h = bar.get_height()
         if h > 0.05:
             ax2.text(bar.get_x() + bar.get_width() / 2, h + 0.01, f'{h:.0%}',
-                     ha='center', va='bottom', fontsize=8)
-ax2.set_ylabel('Score', fontsize=11)
-ax2.set_title('Per-Class Metrics', fontsize=12, fontweight='bold')
+                     ha='center', va='bottom', fontsize=9)
+ax2.set_ylabel('分数', fontsize=11)
+ax2.set_title('各状态类别性能指标', fontsize=13, fontweight='bold')
 ax2.set_xticks(x)
-ax2.set_xticklabels(CLASSES, fontsize=10)
-ax2.set_ylim(0, 1.15)
-ax2.legend(fontsize=9)
+ax2.set_xticklabels(CLASSES, fontsize=11)
+ax2.set_ylim(0, 1.18)
+ax2.legend(fontsize=10)
 ax2.grid(axis='y', alpha=0.3)
 ax2.spines['top'].set_visible(False)
 ax2.spines['right'].set_visible(False)
 
+# Progression
 ax3 = fig.add_subplot(gs[1, 0])
 bars3 = ax3.bar(range(len(stages)), accs, color=colors, alpha=0.85, edgecolor='white', width=0.5)
 for bar, acc in zip(bars3, accs):
     ax3.text(bar.get_x() + bar.get_width() / 2, acc + 0.015,
-             f'{acc:.1%}', ha='center', va='bottom', fontsize=9, fontweight='bold')
-ax3.set_ylabel('Accuracy', fontsize=11)
-ax3.set_title('Accuracy Progression', fontsize=12, fontweight='bold')
+             f'{acc:.1%}', ha='center', va='bottom', fontsize=10, fontweight='bold')
+ax3.set_ylabel('准确率', fontsize=11)
+ax3.set_title('优化各阶段准确率变化', fontsize=13, fontweight='bold')
 ax3.set_xticks(range(len(stages_cn)))
-ax3.set_xticklabels(stages_cn, fontsize=8)
+ax3.set_xticklabels(stages_cn, fontsize=9)
 ax3.set_ylim(0, 1.0)
 ax3.grid(axis='y', alpha=0.3)
-ax3.axhline(y=0.80, color='red', linestyle='--', alpha=0.5)
+ax3.axhline(y=0.80, color='red', linestyle='--', alpha=0.5, label='80%基线')
+ax3.legend(fontsize=10)
 ax3.spines['top'].set_visible(False)
 ax3.spines['right'].set_visible(False)
 
+# Dyn distribution
 ax4 = fig.add_subplot(gs[1, 1])
 bp = ax4.boxplot([dyn_by_class[i] for i in range(4)],
                  positions=range(4), patch_artist=True, widths=0.5)
@@ -260,23 +288,23 @@ for patch, color in zip(bp['boxes'], colors_box):
     patch.set_facecolor(color)
     patch.set_alpha(0.7)
 ax4.set_xticks(range(4))
-ax4.set_xticklabels(CLASSES, fontsize=10)
+ax4.set_xticklabels(CLASSES, fontsize=11)
 ax4.set_ylabel('dyn_stationary', fontsize=11)
-ax4.set_title('dyn_stationary Distribution (Key Parking Feature)', fontsize=12, fontweight='bold')
+ax4.set_title('dyn_stationary 分布（停车检测关键特征）', fontsize=13, fontweight='bold')
 ax4.grid(axis='y', alpha=0.3)
-ax4.axhline(y=0.4, color='red', linestyle='--', alpha=0.6, label='Threshold 0.4')
-ax4.legend(fontsize=9)
+ax4.axhline(y=0.4, color='red', linestyle='--', alpha=0.6, linewidth=1.5, label='阈值0.4')
+ax4.legend(fontsize=10)
 ax4.spines['top'].set_visible(False)
 ax4.spines['right'].set_visible(False)
 
-fig.suptitle('CenterFusion Behavior Classification Optimization Results', fontsize=15, fontweight='bold', y=0.98)
+fig.suptitle('CenterFusion 行为分类优化结果总览', fontsize=16, fontweight='bold', y=0.99)
 plt.savefig(outdir / 'summary_figure.png', dpi=150, bbox_inches='tight')
 plt.close()
 print("  -> summary_figure.png")
 
 # ── 6. Data Distribution Pie + Bar ─────────────────────────────────────────
 print("Generating data distribution figure...")
-fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+fig, axes = plt.subplots(1, 2, figsize=(12, 5.5))
 
 # Pie chart
 ax = axes[0]
@@ -288,7 +316,7 @@ wedges, texts, autotexts = ax.pie(dist, labels=CLASSES, autopct='%1.1f%%',
 for at in autotexts:
     at.set_fontsize(10)
     at.set_fontweight('bold')
-ax.set_title('Class Distribution After Cleaning (n=808)', fontsize=12, fontweight='bold')
+ax.set_title('数据分布（清洗后, n=808）', fontsize=12, fontweight='bold')
 
 # Before vs After bar
 ax = axes[1]
@@ -296,19 +324,19 @@ before = [187, 76, 58, 760]
 after  = [187, 76, 58, 487]
 x = np.arange(4)
 w = 0.35
-b1 = ax.bar(x - w/2, before, w, label='Before Cleaning (n=1081)', color='#bdc3c7', alpha=0.85)
-b2 = ax.bar(x + w/2, after, w, label='After Cleaning (n=808)', color='#27ae60', alpha=0.85)
+b1 = ax.bar(x - w/2, before, w, label='清洗前 (n=1081)', color='#bdc3c7', alpha=0.85)
+b2 = ax.bar(x + w/2, after, w, label='清洗后 (n=808)', color='#27ae60', alpha=0.85)
 for bars in [b1, b2]:
     for bar in bars:
         h = bar.get_height()
         if h > 0:
             ax.text(bar.get_x() + bar.get_width() / 2, h + 5,
-                    f'{int(h)}', ha='center', va='bottom', fontsize=8)
-ax.set_ylabel('Number of Samples', fontsize=11)
-ax.set_title('Sample Count: Before vs After Cleaning', fontsize=12, fontweight='bold')
+                    f'{int(h)}', ha='center', va='bottom', fontsize=9)
+ax.set_ylabel('样本数量', fontsize=12)
+ax.set_title('清洗前后样本数量对比', fontsize=12, fontweight='bold')
 ax.set_xticks(x)
-ax.set_xticklabels(CLASSES, fontsize=10)
-ax.legend(fontsize=10)
+ax.set_xticklabels(CLASSES, fontsize=11)
+ax.legend(fontsize=11)
 ax.grid(axis='y', alpha=0.3)
 ax.spines['top'].set_visible(False)
 ax.spines['right'].set_visible(False)

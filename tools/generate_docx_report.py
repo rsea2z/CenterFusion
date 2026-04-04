@@ -231,7 +231,7 @@ add_heading(doc, '3.3 两阶段分类器设计与实现', level=2, size=12)
 add_para(doc, '设计思路：parking 的判断不需要 ML 模型参与——dyn_stationary 规则即可精准识别，让 RF 只专注于区分3个运动类。')
 doc.add_paragraph()
 
-add_pic(doc, 'output/visualizations/summary_figure.png', width=Inches(6.5))
+add_pic(doc, 'output/visualizations/summary_figure.png', width=Inches(7.0))
 
 doc.add_paragraph()
 add_para(doc, 'Stage 1 规则（dyn_stationary 阈值网格搜索结果）：', bold=True)
@@ -366,13 +366,14 @@ add_table(doc, ['参数', '值'], config_table, col_widths=[2.0, 4.0])
 # ── 4. Data Distribution ─────────────────────────────────────────────────────
 add_heading(doc, '4. 数据集变化统计', level=1, size=15)
 add_para(doc, '原始标注 1081 个 track，清洗后保留 808 个 track：')
-add_pic(doc, 'output/visualizations/data_distribution.png', width=Inches(6.5))
+add_pic(doc, 'output/visualizations/data_distribution.png', width=Inches(7.0))
 
 # ── 5. Results ──────────────────────────────────────────────────────────────
 add_heading(doc, '5. 最终结果', level=1, size=15)
 
-add_heading(doc, '5.1 混淆矩阵（5折交叉验证）', level=2, size=12)
-add_pic(doc, 'output/visualizations/confusion_matrix.png', width=Inches(5.5))
+add_heading(doc, '5.1 混淆矩阵（5折交叉验证, 行归一化%）', level=2, size=12)
+add_pic(doc, 'output/visualizations/confusion_matrix.png', width=Inches(6.5))
+add_para(doc, '注：颜色深度按每行（真实类别）归一化，单元格内显示"百分比（样本数）"，对角线加粗边框。行归一化使得少数类（向左/向右）颜色深度与多数类可比。', size=10)
 
 doc.add_paragraph()
 add_heading(doc, '5.2 各状态类别性能指标', level=2, size=12)
